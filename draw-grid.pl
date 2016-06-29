@@ -10,6 +10,7 @@
 use warnings;
 use strict;
 
+use List::Util qw[min max];
 use Data::Dumper;
 use Imager;
 use Ham::WSJTX::Logparse;
@@ -22,13 +23,14 @@ my $dropbox = "$ENV{HOME}/Dropbox/";
 my @logfiles = glob("$dropbox/*ALL.TXT");
 my $outputDirectory = "$ENV{HOME}/Desktop/maps";
 
-# This script can generate three types of maps, by setting the value of $mapType:
+# This script can generate several types of maps, by setting the value of $mapType:
 # 'mins' => 1440 maps, one per minute of 24 hours, each showing the stations received in that minute, and fading out
 #           the ones recently heard for artistic effect.
 # 'hours' => 24 maps, one per hour, each showing the stations received in that hour. No artistic fadeout.
 # 'heatmap' => 24 maps, one per hour, each showing the quantity of stations received in that hour, as a heatmap of
 #           grid squares.
-my $mapType = 'mins'; # 'mins' or 'hours', 'heatmap'
+# 'clocks' => 1 map showing clocks in each grid square, showing at which hours stations were heard.
+my $mapType = 'clocks'; # 'mins' or 'hours', 'heatmap', 'clocks'
 
 # This works fine on OS X; adjust for other platforms.
 my $font = Imager::Font->new(file => "/Library/Fonts/Microsoft/Lucida Console.ttf");
@@ -39,7 +41,8 @@ my $font = Imager::Font->new(file => "/Library/Fonts/Microsoft/Lucida Console.tt
 # Shouldn't need to change anything below here... ----------------------------------------------------------------------
 
 # Read all the data....
-my %gridsigs = (); # grid => highest powered signal at this grid
+my %gridsigs = (); # GGNN grid => highest powered signal at this grid
+my %gridhours = (); # GG grid => hash of which hours contained a signal
 my %timed = (); # dddd minute => [ records for all stations heard at this minute ]
 my %hourlytimed = (); # hh hour => [ records for all stations heard at this hour ]
 my $logparser = Ham::WSJTX::Logparse->new(@logfiles);
@@ -76,6 +79,12 @@ my $callback = sub {
     $hourlytimed{$hour} ||= [];
     my $hrecs = $hourlytimed{$hour};
     push @$hrecs, $record;
+
+    # Collect this hour under its GG grid, counting number of signals per hour
+    my $ggGrid = substr($grid, 0, 2);
+    $gridhours{$ggGrid} ||= {};
+    $gridhours{$ggGrid}->{$hour} ||= 0;
+    $gridhours{$ggGrid}->{$hour} ++;
 };
 
 $logparser->parseForBand("20m", $callback);
@@ -96,6 +105,8 @@ if ($mapType eq 'mins') {
     generateMinuteMaps();
 } elsif ($mapType eq 'hours' || $mapType eq 'heatmap') {
     generateHourMaps();
+} elsif ($mapType eq 'clocks') {
+    generateClocksMap();
 } else {
     die "Unknown map type $mapType\n";
 }
@@ -231,6 +242,110 @@ sub generateHourMaps {
 }
 
 
+sub generateClocksMap {
+    my $newMap = Ham::WorldMap->new();
+    my $img = $newMap->{image};
+    my $lightGrey = Imager::Color->new(240, 240, 240);
+    my $red = Imager::Color->new(240, 0, 0);
+    use constant HOUR_DEGREES => (360 / 24);
+    while (my ($gg, $hoursHash) = each (%gridhours)) {
+        my @hours = sort (keys (%$hoursHash));
+
+        print "GRID $gg @hours ------------------------------------------------------------\n";
+
+        my ($x, $y) = $newMap->locatorToXY($gg);
+        # odd adjustments
+        $x -= 6;
+        $y += 3;
+        my $radius = (min($newMap->{gridx}, $newMap->{gridy}) / 2) - 2;
+        $img->circle(color => $grey, r => $radius, x => $x, y => $y, aa => 1);
+        $img->circle(color => 'white', r => $radius - 1, x => $x, y => $y, aa => 1);
+
+        # each arc is coloured to represent its proportion of all signals heard in this hour
+        my $totalHourSignals = 0;
+        foreach my $hour (@hours) {
+            $totalHourSignals += $hoursHash->{$hour};
+        }
+
+
+
+        foreach my $hour (@hours) {
+            my $hourSignals = $hoursHash->{$hour};
+
+            # HSV, with SV fixed. H from 0 (red [proportion=0.0]) to 64 (yellow [proportion=1.0)
+            my $proportion = $hourSignals / $totalHourSignals;
+            my $h = 64 - int($proportion * 64);
+            my $color = Imager::Color->new(h => $h, s => 40, v => 80);
+            # printf ("proportion %3.2f%% h [0..64] $h\n", $proportion * 100);
+
+            my $hourDeg = ((int($hour) * HOUR_DEGREES) + 270) % 360;
+            $img->arc(color => $color, r => $radius - 2, x => $x, y => $y, d1 => $hourDeg, d2 => $hourDeg + HOUR_DEGREES );
+        }
+
+        # Spoke if there's no signal before or after this hour
+        foreach my $hour (0 .. 23) {
+            my $before = ($hour - 1) % 24;
+            my $after = ($hour + 1) % 24;
+            next unless (exists $hoursHash->{dig2($hour)});
+            print "sig exists at $hour (before $before after $after)\n";
+            unless (exists $hoursHash->{dig2($before)}) {
+                my $hourRad = deg2rad((($hour * HOUR_DEGREES) + 270) % 360);
+                $img->line(color => $grey, x1 => $x, y1 => $y, x2 => $x + (($radius - 2) * cos($hourRad)), y2 => $y + (($radius - 2) * sin($hourRad)));
+            }
+            unless (exists $hoursHash->{dig2($after)}) {
+                my $hourRad = deg2rad((($after * HOUR_DEGREES) + 270) % 360);
+                $img->line(color => $grey, x1 => $x, y1 => $y, x2 => $x + (($radius - 2) * cos($hourRad)), y2 => $y + (($radius - 2) * sin($hourRad)));
+
+            }
+        }
+    }
+
+
+    # Where is my station?
+    dot($newMap, 'JO01EE', -20, 'blue');
+
+    $newMap->drawLocatorGrid();
+
+
+    # Clock Legend
+    my ($x, $y) = $newMap->locatorToXY("CG");
+    # odd adjustments
+    $x -= 6;
+    $y -= 30;
+    my $radius = $newMap->{gridx} * 2;
+    $img->circle(color => $grey, r => $radius, x => $x, y => $y, aa => 1);
+    $img->circle(color => $lightGrey, r => $radius - 1, x => $x, y => $y, aa => 1);
+
+    foreach my $hour (0 .. 23) {
+        my $hourDeg = (($hour * HOUR_DEGREES) + 270) % 360;
+        my $hourRad = deg2rad($hourDeg);
+        $img->line(color => $grey, x1 => $x, y1 => $y, x2 => $x + ($radius * cos($hourRad)), y2 => $y + ($radius * sin($hourRad)));
+
+        my $hourLabelDeg = ($hourDeg + (HOUR_DEGREES / 2)) % 360;
+        my $hourLabelRad = deg2rad($hourLabelDeg);
+
+        $img->align_string(x => $x + ($radius * 0.9 * cos($hourLabelRad)), y => $y + ($radius * 0.9 * sin($hourLabelRad)),
+            font => $font,
+            string => "" + $hour,
+            color => $grey,
+            halign=>'center',
+            valign=>'center',
+            size => 20,
+            aa => 1);
+    }
+
+
+
+
+    my $finalMap = caption("TIME", $newMap);
+    my $filename = "/Users/matt/Desktop/maps/clocks.png";
+
+    $finalMap->write(file => $filename) or die "Could not write map $filename: " . $finalMap->errstr;
+}
+
+sub dig2 {
+    return sprintf("%02d", shift);
+}
 
 sub caption {
     my $time = shift;
