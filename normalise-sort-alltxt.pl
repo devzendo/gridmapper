@@ -42,8 +42,13 @@ my $insertRecord = sub {
     my $mode = shift;
     my $callsign = shift;
     my $grid = shift;
+    if ($grid =~ /(TU|RR)73/) {
+        # warn "dodgy data from $date $time $callsign\n";
+        return;
+    }
+
     $grids{$grid} = 1;
-    #print "date $date time $time power $power mode $mode callsign $callsign grid $grid\n";
+    print "date $date time $time power $power mode $mode callsign $callsign grid $grid\n";
     $records{$time} ||= [];
     my $timeList = $records{$time};
     push @$timeList, [$grid, $callsign, $power, $mode];
@@ -68,11 +73,12 @@ foreach (@allfiles) {
 #print Dumper(\%records) . "\n";
 my @timeSortedKeys = sort { $a <=> $b } (keys(%records));
 foreach my $timeKey (@timeSortedKeys) {
-    #print "$timeKey:\n";
-    #my $list = $records{$timeKey};
-    #foreach my $arr (@$list) {
-    #    print "  $arr->[0] $arr->[1] $arr->[2] $arr->[3]\n";
-    #}
+    print "$timeKey:\n";
+    my $list = $records{$timeKey};
+    foreach my $arr (@$list) {
+        print "  $arr->[0] $arr->[1] $arr->[2] $arr->[3]\n";
+        sleep 0.1;
+    }
 
     #my $squareByMinute = $squaresByMinute{$timeKey};
     #foreach (sort(keys $squareByMinute)) {
@@ -81,10 +87,10 @@ foreach my $timeKey (@timeSortedKeys) {
 }
 
 #print Dumper(\%callsignToGrid) . "\n";
-foreach my $callsign (sort(keys(%callsignToGrid))) {
-    my $callsignGrid = $callsignToGrid{$callsign};
-    print "$callsign $callsignGrid->[0] $callsignGrid->[3] [$callsignGrid->[1]..$callsignGrid->[2]]\n";
-}
+#foreach my $callsign (sort(keys(%callsignToGrid))) {
+#    my $callsignGrid = $callsignToGrid{$callsign};
+#    print "$callsign $callsignGrid->[0] $callsignGrid->[3] [$callsignGrid->[1]..$callsignGrid->[2]]\n";
+#}
 print scalar(keys(%callsignToGrid)) . " callsigns\n";
 print scalar(keys(%grids)) . " grid squares\n";
 
