@@ -1,6 +1,4 @@
-syntax: regexp
 target/
-syntax: glob
 .cache
 .scala_dependencies
 *.iml
